@@ -1,0 +1,1169 @@
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "view-in-github",
+        "colab_type": "text"
+      },
+      "source": [
+        "<a href=\"https://colab.research.google.com/github/PavelGrznv/AI_Labworks/blob/Labwork_3/Labwork_3\" target=\"_parent\"><img src=\"https://colab.research.google.com/assets/colab-badge.svg\" alt=\"Open In Colab\"/></a>"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import os\n",
+        "import zipfile\n",
+        "from collections import Counter\n",
+        "\n",
+        "import numpy as np\n",
+        "import matplotlib.pyplot as plt\n",
+        "from sklearn.metrics import confusion_matrix, classification_report, accuracy_score\n",
+        "\n",
+        "import tensorflow as tf\n",
+        "from tensorflow.keras import layers, models, callbacks, optimizers\n",
+        "from tensorflow.keras.models import load_model\n",
+        "from tensorflow.keras.preprocessing.image import ImageDataGenerator\n",
+        "from tensorflow.keras.applications import InceptionResNetV2\n"
+      ],
+      "metadata": {
+        "id": "kJVIjeKrCZCx"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import kagglehub\n",
+        "path = kagglehub.dataset_download('nunenuh/pytorch-challange-flower-dataset')\n",
+        "print('Downloaded to:', path)\n",
+        "\n",
+        "\n",
+        "for fname in os.listdir(path):\n",
+        "    if fname.lower().endswith('.zip'):\n",
+        "        zip_path = os.path.join(path, fname)\n",
+        "        print(f\"Extracting {zip_path} …\")\n",
+        "        with zipfile.ZipFile(zip_path, 'r') as z:\n",
+        "            z.extractall(path)\n",
+        "\n",
+        "\n",
+        "print('Contents of dataset folder:', os.listdir(path))\n",
+        "\n",
+        "\n",
+        "def find_dir(target_name, base_path):\n",
+        "    for root, dirs, files in os.walk(base_path):\n",
+        "        if target_name in dirs:\n",
+        "            return os.path.join(root, target_name)\n",
+        "    return None\n",
+        "\n",
+        "train_dir = find_dir('train', path)\n",
+        "test_dir  = find_dir('test',  path)\n",
+        "\n",
+        "if not train_dir:\n",
+        "    raise FileNotFoundError(f\"Could not locate 'train/' under {path!r}.\")\n",
+        "\n",
+        "print('train_dir set to:', train_dir)\n",
+        "if test_dir:\n",
+        "    print('test_dir  set to:', test_dir)\n",
+        "else:\n",
+        "    print(\"No 'test/' folder found; test evaluation will use the validation split.\")\n",
+        "\n",
+        "\n",
+        "class_counts = {\n",
+        "    d: len(os.listdir(os.path.join(train_dir, d)))\n",
+        "    for d in os.listdir(train_dir)\n",
+        "    if os.path.isdir(os.path.join(train_dir, d))\n",
+        "}\n",
+        "\n",
+        "# Select top N classes with most images\n",
+        "N_CLASSES = 10\n",
+        "top_classes = sorted(class_counts, key=class_counts.get, reverse=True)[:N_CLASSES]\n",
+        "print(f\"Selected top {N_CLASSES} classes:\", top_classes)\n",
+        "\n",
+        "# Image parameters\n",
+        "IMG_SIZE = 224\n",
+        "BATCH_SIZE = 32\n",
+        "SEED = 42\n",
+        "EPOCHS = 20\n",
+        "\n",
+        "\n",
+        "train_datagen = ImageDataGenerator(\n",
+        "    rescale=1./255,\n",
+        "    rotation_range=40,\n",
+        "    width_shift_range=0.2,\n",
+        "    height_shift_range=0.2,\n",
+        "    zoom_range=0.2,\n",
+        "    brightness_range=(0.8, 1.2),\n",
+        "    horizontal_flip=True,\n",
+        "    vertical_flip=True,\n",
+        "    validation_split=0.2\n",
+        ")\n",
+        "\n",
+        "test_datagen = ImageDataGenerator(rescale=1./255)\n",
+        "\n",
+        "train_generator = train_datagen.flow_from_directory(\n",
+        "    train_dir,\n",
+        "    target_size=(IMG_SIZE, IMG_SIZE),\n",
+        "    batch_size=BATCH_SIZE,\n",
+        "    classes=top_classes,\n",
+        "    class_mode='categorical',\n",
+        "    subset='training',\n",
+        "    shuffle=True,\n",
+        "    seed=SEED\n",
+        ")\n",
+        "\n",
+        "validation_generator = train_datagen.flow_from_directory(\n",
+        "    train_dir,\n",
+        "    target_size=(IMG_SIZE, IMG_SIZE),\n",
+        "    batch_size=BATCH_SIZE,\n",
+        "    classes=top_classes,\n",
+        "    class_mode='categorical',\n",
+        "    subset='validation',\n",
+        "    shuffle=True,\n",
+        "    seed=SEED\n",
+        ")\n",
+        "\n",
+        "\n",
+        "if test_dir:\n",
+        "    test_generator = test_datagen.flow_from_directory(\n",
+        "        test_dir,\n",
+        "        target_size=(IMG_SIZE, IMG_SIZE),\n",
+        "        batch_size=BATCH_SIZE,\n",
+        "        classes=top_classes,\n",
+        "        class_mode='categorical',\n",
+        "        shuffle=False\n",
+        "    )\n",
+        "else:\n",
+        "\n",
+        "    test_generator = test_datagen.flow_from_directory(\n",
+        "        train_dir,\n",
+        "        target_size=(IMG_SIZE, IMG_SIZE),\n",
+        "        batch_size=BATCH_SIZE,\n",
+        "        classes=top_classes,\n",
+        "        class_mode='categorical',\n",
+        "        subset='validation',\n",
+        "        shuffle=False,\n",
+        "        seed=SEED\n",
+        "    )\n",
+        "\n",
+        "\n",
+        "custom_model = models.Sequential([\n",
+        "    layers.Conv2D(32, (3, 3), activation='relu', padding='same', input_shape=(IMG_SIZE, IMG_SIZE, 3)),\n",
+        "    layers.Conv2D(32, (3, 3), activation='relu', padding='valid'),\n",
+        "    layers.MaxPooling2D((2, 2)),\n",
+        "    layers.Dropout(0.25),\n",
+        "\n",
+        "    layers.Conv2D(64, (3, 3), activation='relu', padding='same'),\n",
+        "    layers.Conv2D(64, (3, 3), activation='relu', padding='same'),\n",
+        "    layers.MaxPooling2D((2, 2)),\n",
+        "    layers.Dropout(0.25),\n",
+        "\n",
+        "    layers.Flatten(),\n",
+        "    layers.Dense(128, activation='relu'),\n",
+        "    layers.Dropout(0.5),\n",
+        "    layers.Dense(N_CLASSES, activation='softmax')\n",
+        "])\n",
+        "\n",
+        "custom_model.compile(\n",
+        "    optimizer='adam',\n",
+        "    loss='categorical_crossentropy',\n",
+        "    metrics=['accuracy']\n",
+        ")\n",
+        "\n",
+        "\n",
+        "checkpoint_best = callbacks.ModelCheckpoint(\n",
+        "    'custom_best.h5', monitor='val_loss', save_best_only=True, verbose=1\n",
+        ")\n",
+        "checkpoint_last = callbacks.ModelCheckpoint(\n",
+        "    'custom_last.h5', save_best_only=False, verbose=0\n",
+        ")\n",
+        "\n",
+        "\n",
+        "history_custom = custom_model.fit(\n",
+        "    train_generator,\n",
+        "    epochs=EPOCHS,\n",
+        "    validation_data=validation_generator,\n",
+        "    callbacks=[checkpoint_best, checkpoint_last]\n",
+        ")\n",
+        "\n",
+        "\n",
+        "best_model = load_model('custom_best.h5')"
+      ],
+      "metadata": {
+        "id": "kdzO5VobDFUc",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "outputId": "a1c2d833-856e-4486-88d7-24bc1d27d3c1"
+      },
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Downloaded to: /kaggle/input/pytorch-challange-flower-dataset\n",
+            "Contents of dataset folder: ['sample_submission.csv', 'dataset', 'README.md', 'cat_to_name.json']\n",
+            "train_dir set to: /kaggle/input/pytorch-challange-flower-dataset/dataset/train\n",
+            "test_dir  set to: /kaggle/input/pytorch-challange-flower-dataset/dataset/test\n",
+            "Selected top 10 classes: ['51', '77', '46', '89', '73', '74', '81', '94', '88', '78']\n",
+            "Found 1207 images belonging to 10 classes.\n",
+            "Found 298 images belonging to 10 classes.\n",
+            "Found 0 images belonging to 10 classes.\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "/usr/local/lib/python3.11/dist-packages/keras/src/layers/convolutional/base_conv.py:107: UserWarning: Do not pass an `input_shape`/`input_dim` argument to a layer. When using Sequential models, prefer using an `Input(shape)` object as the first layer in the model instead.\n",
+            "  super().__init__(activity_regularizer=activity_regularizer, **kwargs)\n",
+            "/usr/local/lib/python3.11/dist-packages/keras/src/trainers/data_adapters/py_dataset_adapter.py:121: UserWarning: Your `PyDataset` class should call `super().__init__(**kwargs)` in its constructor. `**kwargs` can include `workers`, `use_multiprocessing`, `max_queue_size`. Do not pass these arguments to `fit()`, as they will be ignored.\n",
+            "  self._warn_if_super_not_called()\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Epoch 1/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 900ms/step - accuracy: 0.1422 - loss: 2.9941\n",
+            "Epoch 1: val_loss improved from inf to 2.18940, saving model to custom_best.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n",
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m65s\u001b[0m 1s/step - accuracy: 0.1433 - loss: 2.9789 - val_accuracy: 0.2517 - val_loss: 2.1894\n",
+            "Epoch 2/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 585ms/step - accuracy: 0.2443 - loss: 1.9656\n",
+            "Epoch 2: val_loss improved from 2.18940 to 1.94566, saving model to custom_best.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n",
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m29s\u001b[0m 757ms/step - accuracy: 0.2443 - loss: 1.9653 - val_accuracy: 0.3087 - val_loss: 1.9457\n",
+            "Epoch 3/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 516ms/step - accuracy: 0.2869 - loss: 1.8669\n",
+            "Epoch 3: val_loss improved from 1.94566 to 1.75413, saving model to custom_best.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n",
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m40s\u001b[0m 733ms/step - accuracy: 0.2875 - loss: 1.8658 - val_accuracy: 0.3456 - val_loss: 1.7541\n",
+            "Epoch 4/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 495ms/step - accuracy: 0.3639 - loss: 1.7308\n",
+            "Epoch 4: val_loss improved from 1.75413 to 1.57734, saving model to custom_best.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n",
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m26s\u001b[0m 689ms/step - accuracy: 0.3641 - loss: 1.7303 - val_accuracy: 0.4228 - val_loss: 1.5773\n",
+            "Epoch 5/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 513ms/step - accuracy: 0.4193 - loss: 1.6081\n",
+            "Epoch 5: val_loss did not improve from 1.57734\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m25s\u001b[0m 666ms/step - accuracy: 0.4189 - loss: 1.6082 - val_accuracy: 0.4597 - val_loss: 1.6242\n",
+            "Epoch 6/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 508ms/step - accuracy: 0.3574 - loss: 1.6031\n",
+            "Epoch 6: val_loss did not improve from 1.57734\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m25s\u001b[0m 655ms/step - accuracy: 0.3580 - loss: 1.6025 - val_accuracy: 0.4664 - val_loss: 1.6390\n",
+            "Epoch 7/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 504ms/step - accuracy: 0.4422 - loss: 1.5139\n",
+            "Epoch 7: val_loss improved from 1.57734 to 1.45939, saving model to custom_best.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n",
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m26s\u001b[0m 680ms/step - accuracy: 0.4421 - loss: 1.5134 - val_accuracy: 0.4765 - val_loss: 1.4594\n",
+            "Epoch 8/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 513ms/step - accuracy: 0.4592 - loss: 1.4264\n",
+            "Epoch 8: val_loss improved from 1.45939 to 1.45398, saving model to custom_best.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n",
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m29s\u001b[0m 775ms/step - accuracy: 0.4594 - loss: 1.4265 - val_accuracy: 0.4664 - val_loss: 1.4540\n",
+            "Epoch 9/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 518ms/step - accuracy: 0.4722 - loss: 1.4044\n",
+            "Epoch 9: val_loss improved from 1.45398 to 1.34887, saving model to custom_best.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n",
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m43s\u001b[0m 811ms/step - accuracy: 0.4717 - loss: 1.4054 - val_accuracy: 0.5470 - val_loss: 1.3489\n",
+            "Epoch 10/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 503ms/step - accuracy: 0.4855 - loss: 1.3547\n",
+            "Epoch 10: val_loss did not improve from 1.34887\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m35s\u001b[0m 657ms/step - accuracy: 0.4852 - loss: 1.3556 - val_accuracy: 0.5034 - val_loss: 1.4217\n",
+            "Epoch 11/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 512ms/step - accuracy: 0.5278 - loss: 1.2989\n",
+            "Epoch 11: val_loss did not improve from 1.34887\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m25s\u001b[0m 653ms/step - accuracy: 0.5271 - loss: 1.2997 - val_accuracy: 0.5201 - val_loss: 1.4618\n",
+            "Epoch 12/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 514ms/step - accuracy: 0.4983 - loss: 1.3754\n",
+            "Epoch 12: val_loss did not improve from 1.34887\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m25s\u001b[0m 651ms/step - accuracy: 0.4986 - loss: 1.3732 - val_accuracy: 0.4933 - val_loss: 1.3786\n",
+            "Epoch 13/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 518ms/step - accuracy: 0.5045 - loss: 1.3328\n",
+            "Epoch 13: val_loss did not improve from 1.34887\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m25s\u001b[0m 659ms/step - accuracy: 0.5043 - loss: 1.3325 - val_accuracy: 0.5403 - val_loss: 1.3530\n",
+            "Epoch 14/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 546ms/step - accuracy: 0.5262 - loss: 1.2911\n",
+            "Epoch 14: val_loss did not improve from 1.34887\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m26s\u001b[0m 684ms/step - accuracy: 0.5264 - loss: 1.2902 - val_accuracy: 0.5470 - val_loss: 1.3753\n",
+            "Epoch 15/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 516ms/step - accuracy: 0.5020 - loss: 1.3484\n",
+            "Epoch 15: val_loss did not improve from 1.34887\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m25s\u001b[0m 654ms/step - accuracy: 0.5025 - loss: 1.3474 - val_accuracy: 0.5940 - val_loss: 1.4622\n",
+            "Epoch 16/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 521ms/step - accuracy: 0.5668 - loss: 1.2557\n",
+            "Epoch 16: val_loss did not improve from 1.34887\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m25s\u001b[0m 664ms/step - accuracy: 0.5663 - loss: 1.2549 - val_accuracy: 0.5537 - val_loss: 1.3967\n",
+            "Epoch 17/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 524ms/step - accuracy: 0.5888 - loss: 1.1950\n",
+            "Epoch 17: val_loss improved from 1.34887 to 1.25933, saving model to custom_best.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n",
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m26s\u001b[0m 691ms/step - accuracy: 0.5883 - loss: 1.1947 - val_accuracy: 0.5671 - val_loss: 1.2593\n",
+            "Epoch 18/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 511ms/step - accuracy: 0.5651 - loss: 1.1462\n",
+            "Epoch 18: val_loss improved from 1.25933 to 1.24039, saving model to custom_best.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n",
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m26s\u001b[0m 680ms/step - accuracy: 0.5652 - loss: 1.1462 - val_accuracy: 0.5537 - val_loss: 1.2404\n",
+            "Epoch 19/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 506ms/step - accuracy: 0.5709 - loss: 1.1382\n",
+            "Epoch 19: val_loss improved from 1.24039 to 1.20760, saving model to custom_best.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n",
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m26s\u001b[0m 681ms/step - accuracy: 0.5706 - loss: 1.1393 - val_accuracy: 0.5839 - val_loss: 1.2076\n",
+            "Epoch 20/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 490ms/step - accuracy: 0.5531 - loss: 1.1380\n",
+            "Epoch 20: val_loss improved from 1.20760 to 1.20133, saving model to custom_best.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n",
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m26s\u001b[0m 677ms/step - accuracy: 0.5536 - loss: 1.1380 - val_accuracy: 0.5973 - val_loss: 1.2013\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:Compiled the loaded model, but the compiled metrics have yet to be built. `model.compile_metrics` will be empty until you train or evaluate the model.\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Decide which generator to use for evaluation\n",
+        "if hasattr(test_generator, 'samples') and test_generator.samples > 0:\n",
+        "    eval_gen = test_generator\n",
+        "    print(f\"Evaluating on test set ({test_generator.samples} samples)\")\n",
+        "else:\n",
+        "    eval_gen = validation_generator\n",
+        "    print(f\"No test samples found; evaluating on validation set ({validation_generator.samples} samples) instead.\")\n",
+        "\n",
+        "# Evaluate accuracy\n",
+        "eval_loss, eval_acc = best_model.evaluate(eval_gen)\n",
+        "print(f\"Custom CNN Evaluation Accuracy: {eval_acc:.4f}\")\n",
+        "\n",
+        "# Plot training history\n",
+        "plt.figure()\n",
+        "plt.plot(history_custom.history['accuracy'], label='train_acc')\n",
+        "plt.plot(history_custom.history['val_accuracy'], label='val_acc')\n",
+        "plt.title('Custom CNN Accuracy')\n",
+        "plt.legend()\n",
+        "plt.show()\n",
+        "\n",
+        "# Confusion Matrix and Classification Report\n",
+        "y_pred = best_model.predict(eval_gen)\n",
+        "y_pred_classes = np.argmax(y_pred, axis=1)\n",
+        "y_true = eval_gen.classes\n",
+        "\n",
+        "cm = confusion_matrix(y_true, y_pred_classes)\n",
+        "print('Confusion Matrix:\\n', cm)\n",
+        "print('Classification Report:\\n', classification_report(y_true, y_pred_classes, target_names=top_classes))"
+      ],
+      "metadata": {
+        "id": "FnpUvs_aDnmg",
+        "colab": {
+          "base_uri": "https://localhost:8080/",
+          "height": 1000
+        },
+        "outputId": "cf92579f-fb59-4f1e-973d-07a559e05ace"
+      },
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "No test samples found; evaluating on validation set (298 samples) instead.\n",
+            "\u001b[1m10/10\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m5s\u001b[0m 410ms/step - accuracy: 0.6233 - loss: 1.1576\n",
+            "Custom CNN Evaluation Accuracy: 0.6208\n"
+          ]
+        },
+        {
+          "output_type": "display_data",
+          "data": {
+            "text/plain": [
+              "<Figure size 640x480 with 1 Axes>"
+            ],
+            "image/png": "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\n"
+          },
+          "metadata": {}
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\u001b[1m10/10\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m6s\u001b[0m 526ms/step\n",
+            "Confusion Matrix:\n",
+            " [[2 8 5 4 7 4 3 4 1 3]\n",
+            " [1 7 5 7 4 4 7 2 2 2]\n",
+            " [3 4 2 4 7 2 6 1 1 1]\n",
+            " [2 4 3 2 6 2 6 2 1 2]\n",
+            " [3 6 7 1 5 1 1 4 1 0]\n",
+            " [1 4 3 2 4 2 5 4 2 1]\n",
+            " [4 5 3 3 5 2 1 1 3 0]\n",
+            " [3 4 2 1 3 2 6 2 2 1]\n",
+            " [1 2 2 2 6 2 6 2 0 0]\n",
+            " [2 4 0 2 4 5 2 1 1 1]]\n",
+            "Classification Report:\n",
+            "               precision    recall  f1-score   support\n",
+            "\n",
+            "          51       0.09      0.05      0.06        41\n",
+            "          77       0.15      0.17      0.16        41\n",
+            "          46       0.06      0.06      0.06        31\n",
+            "          89       0.07      0.07      0.07        30\n",
+            "          73       0.10      0.17      0.12        29\n",
+            "          74       0.08      0.07      0.07        28\n",
+            "          81       0.02      0.04      0.03        27\n",
+            "          94       0.09      0.08      0.08        26\n",
+            "          88       0.00      0.00      0.00        23\n",
+            "          78       0.09      0.05      0.06        22\n",
+            "\n",
+            "    accuracy                           0.08       298\n",
+            "   macro avg       0.07      0.08      0.07       298\n",
+            "weighted avg       0.08      0.08      0.08       298\n",
+            "\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Load pre-trained base\n",
+        "base_model = InceptionResNetV2(\n",
+        "    weights='imagenet', include_top=False,\n",
+        "    input_shape=(IMG_SIZE, IMG_SIZE, 3)\n",
+        ")\n",
+        "base_model.trainable = False\n",
+        "\n",
+        "# Add new classification head\n",
+        "x = base_model.output\n",
+        "x = layers.GlobalAveragePooling2D()(x)\n",
+        "x = layers.Dropout(0.5)(x)\n",
+        "x = layers.Dense(256, activation='relu')(x)\n",
+        "outputs = layers.Dense(N_CLASSES, activation='softmax')(x)\n",
+        "\n",
+        "transfer_model = models.Model(inputs=base_model.input, outputs=outputs)\n",
+        "transfer_model.compile(\n",
+        "    optimizer='adam',\n",
+        "    loss='categorical_crossentropy',\n",
+        "    metrics=['accuracy']\n",
+        ")\n",
+        "\n",
+        "# Train head layers\n",
+        "history_tl = transfer_model.fit(\n",
+        "    train_generator,\n",
+        "    epochs=10,\n",
+        "    validation_data=validation_generator,\n",
+        "    callbacks=[callbacks.ModelCheckpoint('tl_head.h5', save_best_only=True, verbose=1)]\n",
+        ")\n",
+        "\n",
+        "# Fine-tuning: unfreeze some layers\n",
+        "base_model.trainable = True\n",
+        "# Freeze the first N layers to preserve low-level features\n",
+        "for layer in base_model.layers[:775]:\n",
+        "    layer.trainable = False\n",
+        "\n",
+        "transfer_model.compile(\n",
+        "    optimizer=optimizers.Adam(1e-5),\n",
+        "    loss='categorical_crossentropy',\n",
+        "    metrics=['accuracy']\n",
+        ")\n",
+        "\n",
+        "history_ft = transfer_model.fit(\n",
+        "    train_generator,\n",
+        "    epochs=20,\n",
+        "    initial_epoch=history_tl.epoch[-1],\n",
+        "    validation_data=validation_generator,\n",
+        "    callbacks=[callbacks.ModelCheckpoint('tl_finetuned.keras', save_best_only=True, verbose=1)]\n",
+        ")"
+      ],
+      "metadata": {
+        "id": "DRbHteyIFD7M",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "outputId": "9b4ae92f-f4b6-470a-efff-337c92726578"
+      },
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Downloading data from https://storage.googleapis.com/tensorflow/keras-applications/inception_resnet_v2/inception_resnet_v2_weights_tf_dim_ordering_tf_kernels_notop.h5\n",
+            "\u001b[1m219055592/219055592\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m1s\u001b[0m 0us/step\n",
+            "Epoch 1/10\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 887ms/step - accuracy: 0.4162 - loss: 1.8775\n",
+            "Epoch 1: val_loss improved from inf to 0.73173, saving model to tl_head.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m94s\u001b[0m 2s/step - accuracy: 0.4205 - loss: 1.8626 - val_accuracy: 0.7081 - val_loss: 0.7317\n",
+            "Epoch 2/10\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 591ms/step - accuracy: 0.7711 - loss: 0.6470\n",
+            "Epoch 2: val_loss improved from 0.73173 to 0.49431, saving model to tl_head.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m29s\u001b[0m 764ms/step - accuracy: 0.7708 - loss: 0.6482 - val_accuracy: 0.8356 - val_loss: 0.4943\n",
+            "Epoch 3/10\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 577ms/step - accuracy: 0.8053 - loss: 0.5933\n",
+            "Epoch 3: val_loss did not improve from 0.49431\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m27s\u001b[0m 709ms/step - accuracy: 0.8054 - loss: 0.5922 - val_accuracy: 0.8255 - val_loss: 0.5123\n",
+            "Epoch 4/10\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 556ms/step - accuracy: 0.8439 - loss: 0.4831\n",
+            "Epoch 4: val_loss did not improve from 0.49431\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m26s\u001b[0m 697ms/step - accuracy: 0.8434 - loss: 0.4836 - val_accuracy: 0.8054 - val_loss: 0.5702\n",
+            "Epoch 5/10\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 528ms/step - accuracy: 0.8350 - loss: 0.4690\n",
+            "Epoch 5: val_loss improved from 0.49431 to 0.43911, saving model to tl_head.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m28s\u001b[0m 722ms/step - accuracy: 0.8351 - loss: 0.4689 - val_accuracy: 0.8624 - val_loss: 0.4391\n",
+            "Epoch 6/10\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 538ms/step - accuracy: 0.8660 - loss: 0.3713\n",
+            "Epoch 6: val_loss did not improve from 0.43911\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m26s\u001b[0m 692ms/step - accuracy: 0.8658 - loss: 0.3723 - val_accuracy: 0.8188 - val_loss: 0.4607\n",
+            "Epoch 7/10\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 570ms/step - accuracy: 0.8595 - loss: 0.4531\n",
+            "Epoch 7: val_loss improved from 0.43911 to 0.40275, saving model to tl_head.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m32s\u001b[0m 861ms/step - accuracy: 0.8594 - loss: 0.4526 - val_accuracy: 0.8792 - val_loss: 0.4028\n",
+            "Epoch 8/10\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 543ms/step - accuracy: 0.8782 - loss: 0.3659\n",
+            "Epoch 8: val_loss did not improve from 0.40275\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m26s\u001b[0m 693ms/step - accuracy: 0.8781 - loss: 0.3658 - val_accuracy: 0.8490 - val_loss: 0.4897\n",
+            "Epoch 9/10\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 520ms/step - accuracy: 0.8821 - loss: 0.3697\n",
+            "Epoch 9: val_loss improved from 0.40275 to 0.37421, saving model to tl_head.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m27s\u001b[0m 709ms/step - accuracy: 0.8817 - loss: 0.3706 - val_accuracy: 0.8624 - val_loss: 0.3742\n",
+            "Epoch 10/10\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 536ms/step - accuracy: 0.8721 - loss: 0.3659\n",
+            "Epoch 10: val_loss improved from 0.37421 to 0.32381, saving model to tl_head.h5\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:You are saving your model as an HDF5 file via `model.save()` or `keras.saving.save_model(model)`. This file format is considered legacy. We recommend using instead the native Keras format, e.g. `model.save('my_model.keras')` or `keras.saving.save_model(model, 'my_model.keras')`. \n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\r\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m27s\u001b[0m 702ms/step - accuracy: 0.8721 - loss: 0.3658 - val_accuracy: 0.8826 - val_loss: 0.3238\n",
+            "Epoch 10/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 753ms/step - accuracy: 0.8681 - loss: 0.4173\n",
+            "Epoch 10: val_loss improved from inf to 0.30252, saving model to tl_finetuned.keras\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m85s\u001b[0m 1s/step - accuracy: 0.8684 - loss: 0.4168 - val_accuracy: 0.8826 - val_loss: 0.3025\n",
+            "Epoch 11/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 537ms/step - accuracy: 0.8751 - loss: 0.3673\n",
+            "Epoch 11: val_loss improved from 0.30252 to 0.27889, saving model to tl_finetuned.keras\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m28s\u001b[0m 750ms/step - accuracy: 0.8752 - loss: 0.3670 - val_accuracy: 0.9128 - val_loss: 0.2789\n",
+            "Epoch 12/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 520ms/step - accuracy: 0.8907 - loss: 0.3603\n",
+            "Epoch 12: val_loss did not improve from 0.27889\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m38s\u001b[0m 669ms/step - accuracy: 0.8908 - loss: 0.3596 - val_accuracy: 0.9094 - val_loss: 0.3228\n",
+            "Epoch 13/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 516ms/step - accuracy: 0.8993 - loss: 0.3119\n",
+            "Epoch 13: val_loss did not improve from 0.27889\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m25s\u001b[0m 666ms/step - accuracy: 0.8996 - loss: 0.3115 - val_accuracy: 0.9094 - val_loss: 0.3018\n",
+            "Epoch 14/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 555ms/step - accuracy: 0.9099 - loss: 0.2864\n",
+            "Epoch 14: val_loss improved from 0.27889 to 0.27379, saving model to tl_finetuned.keras\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m29s\u001b[0m 769ms/step - accuracy: 0.9098 - loss: 0.2870 - val_accuracy: 0.8993 - val_loss: 0.2738\n",
+            "Epoch 15/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 564ms/step - accuracy: 0.9174 - loss: 0.3112\n",
+            "Epoch 15: val_loss improved from 0.27379 to 0.22397, saving model to tl_finetuned.keras\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m29s\u001b[0m 775ms/step - accuracy: 0.9175 - loss: 0.3105 - val_accuracy: 0.9128 - val_loss: 0.2240\n",
+            "Epoch 16/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 541ms/step - accuracy: 0.9176 - loss: 0.2876\n",
+            "Epoch 16: val_loss did not improve from 0.22397\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m27s\u001b[0m 699ms/step - accuracy: 0.9175 - loss: 0.2875 - val_accuracy: 0.9060 - val_loss: 0.3424\n",
+            "Epoch 17/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 552ms/step - accuracy: 0.8949 - loss: 0.2835\n",
+            "Epoch 17: val_loss did not improve from 0.22397\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m26s\u001b[0m 693ms/step - accuracy: 0.8954 - loss: 0.2828 - val_accuracy: 0.9195 - val_loss: 0.2781\n",
+            "Epoch 18/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 518ms/step - accuracy: 0.9236 - loss: 0.2718\n",
+            "Epoch 18: val_loss did not improve from 0.22397\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m25s\u001b[0m 655ms/step - accuracy: 0.9237 - loss: 0.2712 - val_accuracy: 0.9228 - val_loss: 0.2403\n",
+            "Epoch 19/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 524ms/step - accuracy: 0.9174 - loss: 0.2495\n",
+            "Epoch 19: val_loss did not improve from 0.22397\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m25s\u001b[0m 655ms/step - accuracy: 0.9176 - loss: 0.2495 - val_accuracy: 0.9396 - val_loss: 0.2599\n",
+            "Epoch 20/20\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m0s\u001b[0m 529ms/step - accuracy: 0.9247 - loss: 0.2443\n",
+            "Epoch 20: val_loss improved from 0.22397 to 0.20866, saving model to tl_finetuned.keras\n",
+            "\u001b[1m38/38\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m27s\u001b[0m 718ms/step - accuracy: 0.9247 - loss: 0.2442 - val_accuracy: 0.9228 - val_loss: 0.2087\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "_56COR-6ElfV",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "outputId": "9db3240f-f429-4396-bac8-21f409245619"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\u001b[1m10/10\u001b[0m \u001b[32m━━━━━━━━━━━━━━━━━━━━\u001b[0m\u001b[37m\u001b[0m \u001b[1m28s\u001b[0m 961ms/step - accuracy: 0.8954 - loss: 0.3040\n",
+            "Transfer Learning Evaluation Accuracy: 0.9195\n"
+          ]
+        }
+      ],
+      "source": [
+        "# Evaluate Transfer Learning model\n",
+        "tl_best = load_model('tl_finetuned.keras')\n",
+        "# Reuse eval_gen logic for test/validation fallback\n",
+        "tl_loss, tl_acc = tl_best.evaluate(eval_gen)\n",
+        "print(f\"Transfer Learning Evaluation Accuracy: {tl_acc:.4f}\")\n"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "models = {\n",
+        "    \"Custom Best\":      load_model('custom_best.h5'),\n",
+        "    \"Custom Last\":      load_model('custom_last.h5'),\n",
+        "    \"Transfer-Learned\": load_model('tl_finetuned.keras')\n",
+        "}\n",
+        "\n",
+        "# 3) Оцениваем на validation\n",
+        "results = {}\n",
+        "y_true = validation_generator.classes\n",
+        "\n",
+        "for name, model in models.items():\n",
+        "    print(f\"\\n=== Evaluating model: {name} ===\")\n",
+        "    loss, acc = model.evaluate(validation_generator, verbose=0)\n",
+        "    print(f\"Loss: {loss:.4f}   Accuracy: {acc:.4f}\")\n",
+        "\n",
+        "    y_pred = model.predict(validation_generator, verbose=0)\n",
+        "    y_pred_labels = np.argmax(y_pred, axis=1)\n",
+        "    print(\"Classification Report:\")\n",
+        "    print(classification_report(\n",
+        "        y_true,\n",
+        "        y_pred_labels,\n",
+        "        target_names=top_classes,\n",
+        "        digits=4\n",
+        "    ))\n",
+        "\n",
+        "    results[name] = {\"loss\": loss, \"accuracy\": acc}\n",
+        "\n",
+        "# 4) Визуализируем сравнение\n",
+        "names      = list(results.keys())\n",
+        "accuracies = [results[n]['accuracy'] for n in names]\n",
+        "losses     = [results[n]['loss']     for n in names]\n",
+        "\n",
+        "plt.figure(figsize=(10,4))\n",
+        "\n",
+        "plt.subplot(1,2,1)\n",
+        "plt.bar(names, accuracies)\n",
+        "plt.ylim(0,1)\n",
+        "plt.title('Validation Accuracy Comparison')\n",
+        "plt.ylabel('Accuracy')\n",
+        "plt.xticks(rotation=20, ha='right')\n",
+        "\n",
+        "plt.subplot(1,2,2)\n",
+        "plt.bar(names, losses)\n",
+        "plt.title('Validation Loss Comparison')\n",
+        "plt.ylabel('Loss')\n",
+        "plt.xticks(rotation=20, ha='right')\n",
+        "\n",
+        "plt.tight_layout()\n",
+        "plt.show()"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/",
+          "height": 1000
+        },
+        "id": "g9Qe1fkPXm4O",
+        "outputId": "06a8dfe9-13e6-4555-cfcb-21521ed26f1c"
+      },
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:Compiled the loaded model, but the compiled metrics have yet to be built. `model.compile_metrics` will be empty until you train or evaluate the model.\n",
+            "WARNING:absl:Compiled the loaded model, but the compiled metrics have yet to be built. `model.compile_metrics` will be empty until you train or evaluate the model.\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\n",
+            "=== Evaluating model: Custom Best ===\n",
+            "Loss: 1.1991   Accuracy: 0.5839\n",
+            "Classification Report:\n",
+            "              precision    recall  f1-score   support\n",
+            "\n",
+            "          51     0.0800    0.0488    0.0606        41\n",
+            "          77     0.0930    0.0976    0.0952        41\n",
+            "          46     0.0625    0.0645    0.0635        31\n",
+            "          89     0.0455    0.0333    0.0385        30\n",
+            "          73     0.1136    0.1724    0.1370        29\n",
+            "          74     0.0938    0.1071    0.1000        28\n",
+            "          81     0.0652    0.1111    0.0822        27\n",
+            "          94     0.0357    0.0385    0.0370        26\n",
+            "          88     0.1765    0.1304    0.1500        23\n",
+            "          78     0.2222    0.0909    0.1290        22\n",
+            "\n",
+            "    accuracy                         0.0872       298\n",
+            "   macro avg     0.0988    0.0895    0.0893       298\n",
+            "weighted avg     0.0938    0.0872    0.0864       298\n",
+            "\n",
+            "\n",
+            "=== Evaluating model: Custom Last ===\n",
+            "Loss: 1.2232   Accuracy: 0.6107\n",
+            "Classification Report:\n",
+            "              precision    recall  f1-score   support\n",
+            "\n",
+            "          51     0.1000    0.0488    0.0656        41\n",
+            "          77     0.0682    0.0732    0.0706        41\n",
+            "          46     0.0385    0.0323    0.0351        31\n",
+            "          89     0.0294    0.0333    0.0312        30\n",
+            "          73     0.1000    0.1724    0.1266        29\n",
+            "          74     0.0455    0.0357    0.0400        28\n",
+            "          81     0.0435    0.0741    0.0548        27\n",
+            "          94     0.0645    0.0769    0.0702        26\n",
+            "          88     0.0714    0.0435    0.0541        23\n",
+            "          78     0.0000    0.0000    0.0000        22\n",
+            "\n",
+            "    accuracy                         0.0604       298\n",
+            "   macro avg     0.0561    0.0590    0.0548       298\n",
+            "weighted avg     0.0592    0.0604    0.0569       298\n",
+            "\n",
+            "\n",
+            "=== Evaluating model: Transfer-Learned ===\n",
+            "Loss: 0.2564   Accuracy: 0.9094\n",
+            "Classification Report:\n",
+            "              precision    recall  f1-score   support\n",
+            "\n",
+            "          51     0.1176    0.0976    0.1067        41\n",
+            "          77     0.1163    0.1220    0.1190        41\n",
+            "          46     0.0968    0.0968    0.0968        31\n",
+            "          89     0.0556    0.0667    0.0606        30\n",
+            "          73     0.1200    0.1034    0.1111        29\n",
+            "          74     0.1379    0.1429    0.1404        28\n",
+            "          81     0.1379    0.1481    0.1429        27\n",
+            "          94     0.0000    0.0000    0.0000        26\n",
+            "          88     0.0952    0.0870    0.0909        23\n",
+            "          78     0.0833    0.0909    0.0870        22\n",
+            "\n",
+            "    accuracy                         0.0973       298\n",
+            "   macro avg     0.0961    0.0955    0.0955       298\n",
+            "weighted avg     0.0985    0.0973    0.0976       298\n",
+            "\n"
+          ]
+        },
+        {
+          "output_type": "display_data",
+          "data": {
+            "text/plain": [
+              "<Figure size 1000x400 with 2 Axes>"
+            ],
+            "image/png": "iVBORw0KGgoAAAANSUhEUgAAA90AAAGGCAYAAABmGOKbAAAAOnRFWHRTb2Z0d2FyZQBNYXRwbG90bGliIHZlcnNpb24zLjEwLjAsIGh0dHBzOi8vbWF0cGxvdGxpYi5vcmcvlHJYcgAAAAlwSFlzAAAPYQAAD2EBqD+naQAAatRJREFUeJzt3Xl4TOf///HXJEhEElskRBFbLUVsFWsttVbTorW30bS0tlLpSluxlKClSpXSKrWvpf1QihZVadVOK1q70iTUkggSkvv3h1/mayRIyGSSeD6uK9dl7rnPmfeZOc573nPOuW+LMcYIAAAAAABkOCdHBwAAAAAAQE5F0Q0AAAAAgJ1QdAMAAAAAYCcU3QAAAAAA2AlFNwAAAAAAdkLRDQAAAACAnVB0AwAAAABgJxTdAAAAAADYCUU3AAAAAAB2QtGNLOHYsWOyWCyaNWuWtW3YsGGyWCxpWt5isWjYsGEZGlOTJk3UpEmTDF0nkJnYhwFkdeR/ZFf22PeQc1F0I92eeuopubm5KTY29rZ9unfvrjx58ui///7LxMjS788//9SwYcN07NgxR4eSqtWrV8tiscjX11dJSUmODifbiYmJ0fDhw+Xv7y93d3flzZtXVapU0dtvv63Tp087OjwAyFbI//a1ceNGWSwWLV261NGhpMnhw4f1yiuvqEyZMnJ1dZWnp6caNGigTz75RFeuXHF0eECWQtGNdOvevbuuXLmib775JtXnL1++rJUrV6p169YqXLjwPb/Oe++9Z/eD9p9//qnhw4enmnR/+OEH/fDDD3Z9/buZN2+e/Pz89O+//+rHH390aCzZzZEjR1S9enWNHDlSlStX1tixYzVp0iQ1bdpUX3755QNxFiMr7MMAcg7yP5KtWrVKVatW1eLFixUYGKjJkycrLCxMJUuW1JtvvqmBAwc6OkS7u3Llit577z1Hh4FsIpejA0D289RTT8nDw0Pz589XUFBQiudXrlypuLg4de/e/b5eJ1euXMqVy3G7aJ48eRz22pIUFxenlStXKiwsTF999ZXmzZun5s2bOzSm24mLi1O+fPkcHYbV9evX1aFDB0VFRWnjxo1q2LChzfOjRo3S2LFjHRSd/V2+fFlubm4O34cB5Czkf0jS0aNH1aVLF5UqVUo//vijihUrZn2uX79+OnTokFatWuXACO0nKSlJCQkJcnV1laurq6PDQTbCmW6kW968edWhQwdt2LBB0dHRKZ6fP3++PDw89NRTT+ncuXN64403VLVqVbm7u8vT01Nt2rTRnj177vo6qd3TFR8fr0GDBqlIkSLW1/jnn39SLHv8+HH17dtXFSpUUN68eVW4cGF17NjR5hftWbNmqWPHjpKkpk2bymKxyGKxaOPGjZJSv6crOjpaL730knx8fOTq6ip/f3/Nnj3bpk/y/WkfffSRpk+frrJly8rFxUWPPvqofv/997tud7JvvvlGV65cUceOHdWlSxctX75cV69eTdHv6tWrGjZsmB5++GG5urqqWLFi6tChgw4fPmztk5SUpE8++URVq1aVq6urihQpotatW2v79u02Md98T12yW+9ZSv5c/vzzT3Xr1k0FCxa0FrV79+7VCy+8YL3UrGjRonrxxRdTvczw1KlTeumll+Tr6ysXFxeVLl1affr0UUJCgo4cOSKLxaKPP/44xXJbt26VxWLRggULbvveLVu2THv27NG7776bouCWJE9PT40aNcqmbcmSJapVq5by5s0rLy8vPffcczp16pRNnxdeeEHu7u46ceKEnnzySbm7u6t48eKaMmWKJGnfvn1q1qyZ8uXLp1KlSmn+/Pk2y8+aNUsWi0WbN2/WK6+8osKFC8vT01NBQUE6f/68Td+VK1eqbdu21venbNmyGjlypBITE236NWnSRFWqVNGOHTv02GOPyc3NTUOGDLE+d+s+PHnyZD3yyCNyc3NTwYIFVbt27RRx7tq1S23atJGnp6fc3d31+OOP69dff011W3755ReFhISoSJEiypcvn9q3b68zZ86k9rEAyObI/5mT/+/myJEj6tixowoVKiQ3NzfVrVs31SL3bsf72NhYvfbaa/Lz85OLi4u8vb3VokUL7dy5846vP27cOF26dElffvmlTcGdrFy5cjZnuq9fv66RI0da3w8/Pz8NGTJE8fHxNsv5+fnpySef1MaNG1W7dm3lzZtXVatWtX4uy5cvt36PqVWrlnbt2mWzfHKOPnLkiFq1aqV8+fLJ19dXI0aMkDHGpu9HH32k+vXrq3DhwsqbN69q1aqV6mX9FotF/fv317x58/TII4/IxcVFa9assT538/ejtL6f6fm+cerUKbVr107u7u4qUqSI3njjjRTfA5A9UHTjnnTv3l3Xr1/X4sWLbdrPnTuntWvXqn379sqbN6+OHDmiFStW6Mknn9SECRP05ptvat++fWrcuPE93VPbs2dPTZw4US1bttSYMWOUO3dutW3bNkW/33//XVu3blWXLl00adIk9e7dWxs2bFCTJk10+fJlSdJjjz2mAQMGSJKGDBmiOXPmaM6cOapUqVKqr33lyhU1adJEc+bMUffu3fXhhx8qf/78euGFF/TJJ5+k6D9//nx9+OGHeuWVV/TBBx/o2LFj6tChg65du5ambZ03b56aNm2qokWLqkuXLoqNjdV3331n0ycxMVFPPvmkhg8frlq1amn8+PEaOHCgLl68qP3791v7vfTSS3rttddUokQJjR07Vu+8845cXV1TFFLp0bFjR12+fFmjR49Wr169JEnr1q3TkSNHFBwcrMmTJ6tLly5auHChnnjiCZuEd/r0adWpU0cLFy5U586dNWnSJD3//PPatGmTLl++rDJlyqhBgwaaN29equ+Lh4eHnn766dvG9u2330qSnn/++TRty6xZs9SpUyc5OzsrLCxMvXr10vLly9WwYUNduHDBpm9iYqLatGmjEiVKaNy4cfLz81P//v01a9YstW7dWrVr19bYsWPl4eGhoKAgHT16NMXr9e/fXwcOHNCwYcMUFBSkefPmqV27djbv0axZs+Tu7q6QkBB98sknqlWrloYOHap33nknxfr+++8/tWnTRtWrV9fEiRPVtGnTVLdzxowZGjBggCpXrqyJEydq+PDhql69un777Tdrnz/++EONGjXSnj179NZbb+n999/X0aNH1aRJE5t+yV599VXt2bNHoaGh6tOnj7777jv1798/Te87gOyH/G///H8nUVFRql+/vtauXau+fftq1KhRunr1qp566imby/7Tcrzv3bu3pk6dqmeeeUafffaZ3njjDeXNm1cHDhy4YwzfffedypQpo/r166cp5p49e2ro0KGqWbOmPv74YzVu3FhhYWHq0qVLir6HDh1St27dFBgYqLCwMJ0/f16BgYGaN2+eBg0apOeee07Dhw/X4cOH1alTpxTj3SQmJqp169by8fHRuHHjVKtWLYWGhio0NNSm3yeffKIaNWpoxIgRGj16tHLlyqWOHTum+uPFjz/+qEGDBqlz58765JNP5Ofnl+p2puX9TO/3jVatWqlw4cL66KOP1LhxY40fP17Tp09P0/uOLMYA9+D69eumWLFipl69ejbt06ZNM5LM2rVrjTHGXL161SQmJtr0OXr0qHFxcTEjRoywaZNkvvrqK2tbaGiouXkX3b17t5Fk+vbta7O+bt26GUkmNDTU2nb58uUUMYeHhxtJ5uuvv7a2LVmyxEgyP/30U4r+jRs3No0bN7Y+njhxopFk5s6da21LSEgw9erVM+7u7iYmJsZmWwoXLmzOnTtn7bty5UojyXz33XcpXutWUVFRJleuXGbGjBnWtvr165unn37apt/MmTONJDNhwoQU60hKSjLGGPPjjz8aSWbAgAG37ZPa+5/s1vc2+XPp2rVrir6pve8LFiwwkszmzZutbUFBQcbJycn8/vvvt43p888/N5LMgQMHrM8lJCQYLy8v06NHjxTL3axGjRomf/78d+xz8zq9vb1NlSpVzJUrV6zt//vf/4wkM3ToUGtbjx49jCQzevRoa9v58+dN3rx5jcViMQsXLrS2R0REpHjvvvrqKyPJ1KpVyyQkJFjbx40bZySZlStXWttSey9feeUV4+bmZq5evWpta9y4sZFkpk2blqL/rfvw008/bR555JE7vh/t2rUzefLkMYcPH7a2nT592nh4eJjHHnssxbY0b97c+pkZY8ygQYOMs7OzuXDhwh1fB0D2RP6/wR75/6effjKSzJIlS27b57XXXjOSzM8//2xti42NNaVLlzZ+fn7W9zwtx/v8+fObfv363bHPrS5evGgkpfg+cjvJn13Pnj1t2t944w0jyfz444/WtlKlShlJZuvWrda2tWvXGkkmb9685vjx49b25O8IN39+yTn61VdftbYlJSWZtm3bmjx58pgzZ85Y22/dTxISEkyVKlVMs2bNbNolGScnJ/PHH3+k2LZb9727vZ/38n3j5v8rxtz4flOrVq3bvgayLs504544OzurS5cuCg8Pt7lka/78+fLx8dHjjz8uSXJxcZGT043dLDExUf/995/c3d1VoUKFu16+dKvVq1dLkvXX6WSvvfZair558+a1/vvatWv677//VK5cORUoUCDdr3vz6xctWlRdu3a1tuXOnVsDBgzQpUuXtGnTJpv+nTt3VsGCBa2PGzVqJOnGZWF3s3DhQjk5OemZZ56xtnXt2lXff/+9zWXIy5Ytk5eXl1599dUU60i+NG/ZsmWyWCwpfuW9uc+96N27d4q2m9/3q1ev6uzZs6pbt64kWd/3pKQkrVixQoGBgapdu/ZtY+rUqZNcXV1tznavXbtWZ8+e1XPPPXfH2GJiYuTh4ZGm7di+fbuio6PVt29fm/uz2rZtq4oVK6b6q3fPnj2t/y5QoIAqVKigfPnyqVOnTtb2ChUqqECBAql+3i+//LJy585tfdynTx/lypXLuo9Ltu9lbGyszp49q0aNGuny5cuKiIiwWZ+Li4uCg4Pvuq0FChTQP//8c9vLHBMTE/XDDz+oXbt2KlOmjLW9WLFi6tatm7Zs2aKYmJgU23LzftSoUSMlJibq+PHjd40HQPZD/r/BXvk/LbHUqVPH5tYpd3d3vfzyyzp27Jj+/PNPSXc/3if3+e2339J15UFyDkhrjk3+7EJCQmzaX3/9dUlKkWMrV66sevXqWR8HBARIkpo1a6aSJUumaE/tPb35aqvky8MTEhK0fv16a/vN+8n58+d18eJFNWrUKNV9pHHjxqpcufJdtvTu7+e9fN+49btWo0aNMmQ/Quaj6MY9Sx4oJfn+oH/++Uc///yzunTpImdnZ0k3CqyPP/5Y5cuXl4uLi7y8vFSkSBHt3btXFy9eTNfrHT9+XE5OTipbtqxNe4UKFVL0vXLlioYOHaoSJUrYvO6FCxfS/bo3v3758uWtXyKSJV+OdmuRcXNykGRNwLfeu5uauXPnqk6dOvrvv/906NAhHTp0SDVq1FBCQoKWLFli7Xf48GFVqFDhjgPOHD58WL6+vipUqNBdXzc9SpcunaLt3LlzGjhwoHx8fJQ3b14VKVLE2i/5fT9z5oxiYmJUpUqVO66/QIECCgwMtLn/bN68eSpevLiaNWt2x2U9PT3vOKXNzZI/t9T2o4oVK6b4XJPvib9Z/vz59dBDD6X4ESN//vypft7ly5e3eezu7q5ixYrZfIH9448/1L59e+XPn1+enp4qUqSI9ceGW/fh4sWLp2ngn7ffflvu7u6qU6eOypcvr379+umXX36xPn/mzBldvnw51feiUqVKSkpK0smTJ23a72c/B5A9kf9vsEf+T0sstztG3xzL3Y730o17s/fv368SJUqoTp06GjZs2F0LOk9PT0lKV451cnJSuXLlbNqLFi2qAgUK3PW9y58/vySpRIkSqbbf+p46OTnZ/GgsSQ8//LAk2eTY//3vf6pbt65cXV1VqFAhFSlSRFOnTk11H0nt+05q7vZ+ZsT3jYIFC5JfsymKbtyzWrVqqWLFitYBrRYsWCBjjM2opaNHj1ZISIgee+wxzZ07V2vXrtW6dev0yCOP2HXe6VdffVWjRo1Sp06dtHjxYv3www9at26dChcunGnzXSd/8biVuWUwj1v9/fff+v3337VlyxaVL1/e+pf8q3Zq9znfr9ud8b7TYB03/0qcrFOnTpoxY4Z69+6t5cuX64cffrAOOHIv73tQUJCOHDmirVu3KjY2Vt9++626du2a4ovPrSpWrKiLFy+mKBAzwu0+13v9vFNz4cIFNW7cWHv27NGIESP03Xffad26ddYR1299L1P7LFJTqVIlHTx4UAsXLlTDhg21bNkyNWzYMNWrINIqI7cbQPZA/r+zrHBcTMvxvlOnTjpy5IgmT54sX19fffjhh3rkkUf0/fff33a9np6e8vX1tRk3Ji3SemVdZuTYn3/+WU899ZRcXV312WefafXq1Vq3bp26deuW6vrSmmPv5f28k9ttM7InpgzDfenevbvef/997d27V/Pnz1f58uX16KOPWp9funSpdV7km124cEFeXl7peq1SpUopKSnJenY32cGDB1P0Xbp0qXr06KHx48db265evZpikIr0XF5dqlQp7d27V0lJSTZFX/KlvqVKlUrzuu5k3rx5yp07t+bMmZPigLtlyxZNmjRJJ06cUMmSJVW2bFn99ttvunbtms3lyjcrW7as1q5dq3Pnzt32bHfyr/C3vj/puUT4/Pnz2rBhg4YPH66hQ4da2//++2+bfkWKFJGnp2eaEnbr1q1VpEgRzZs3TwEBAbp8+XKaBkcLDAzUggULNHfuXA0ePPiOfZM/t4MHD6Y4g37w4MEM+1xv9vfff9sMdnbp0iX9+++/euKJJyRJGzdu1H///afly5frscces/ZLbVC29MqXL586d+6szp07KyEhQR06dNCoUaM0ePBgFSlSRG5ubqn+n4qIiJCTk1OKsw0AHkzk/4zP/2mN5XbH6FtjudPxPvny5mLFiqlv377q27evoqOjVbNmTY0aNUpt2rS5bQxPPvmkpk+frvDwcJtLwW8Xb1JSkv7++2+bgeqioqJ04cKFDH/vkpKSdOTIEevZbUn666+/JMk6ANqyZcvk6uqqtWvXysXFxdrvq6++uu/Xv9P76YjvG8g6ONON+5L8q/bQoUO1e/fuFHNzOjs7p/jVcMmSJSmmRkiL5AQwadIkm/aJEyem6Jva606ePDnFmdvkuaVvTcapeeKJJxQZGalFixZZ265fv67JkyfL3d1djRs3Tstm3NW8efPUqFEjde7cWc8++6zN35tvvilJ1rMLzzzzjM6ePatPP/00xXqSt/+ZZ56RMUbDhw+/bR9PT095eXlp8+bNNs9/9tlnaY47+QeCW9/3Wz8fJycntWvXTt999511yrLUYpJuzNXatWtXLV68WLNmzVLVqlVVrVq1u8by7LPPqmrVqho1apTCw8NTPB8bG6t3331XklS7dm15e3tr2rRpNtOXfP/99zpw4ECqo+Per+nTp9uMYjt16lRdv37duo+n9l4mJCSk6/NIza1Tt+XJk0eVK1eWMUbXrl2Ts7OzWrZsqZUrV9pchhcVFaX58+erYcOG1ksLATzYyP8Zn//T4oknntC2bdtscltcXJymT58uPz8/673HdzveJyYmpriU2tvbW76+vimm8rrVW2+9pXz58qlnz56KiopK8fzhw4eto7on/5h862c1YcIESbJLjr35O5ExRp9++qly585tHW/A2dlZFovFZp84duyYVqxYcc+vmZb30xHfN5B1cKYb96V06dKqX7++Vq5cKUkpku6TTz6pESNGKDg4WPXr19e+ffs0b968FPfbpEX16tXVtWtXffbZZ7p48aLq16+vDRs26NChQyn6Pvnkk5ozZ47y58+vypUrKzw8XOvXr1fhwoVTrNPZ2Vljx47VxYsX5eLiombNmsnb2zvFOl9++WV9/vnneuGFF7Rjxw75+flp6dKl+uWXXzRx4sQ0DypyJ7/99psOHTp02ymXihcvrpo1a2revHl6++23FRQUpK+//lohISHatm2bGjVqpLi4OK1fv159+/bV008/raZNm+r555/XpEmT9Pfff6t169ZKSkrSzz//rKZNm1pfq2fPnhozZox69uyp2rVra/PmzdZfh9PC09NTjz32mMaNG6dr166pePHi+uGHH1I9Ozt69Gj98MMPaty4sV5++WVVqlRJ//77r5YsWaItW7aoQIEC1r5BQUGaNGmSfvrpJ+vl1XeTO3duLV++XM2bN9djjz2mTp06qUGDBsqdO7f++OMPzZ8/XwULFtSoUaOUO3dujR07VsHBwWrcuLG6du2qqKgo67QggwYNSvN7kFYJCQl6/PHH1alTJx08eFCfffaZGjZsqKeeekqSVL9+fRUsWFA9evTQ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mjXTpUuXtHnzZusyzs7OOn36tI4cOaKNGzdm9mYBWQI5G/eKnI1bka+zOYMsb8eOHea5554zPj4+xt/f37Rv3978/vvvNn1eeeUV89xzz5mIiAhjjDHjx4831atXN+vXrzeXL182L730knn00UdNcHCwadWqlalQoYJ55JFHjDHGREVFmQIFCpjnnnvO9O/f35QtW9YcOXIk07cT92f79u2mSZMm5r///kv1+VOnTpn+/fubBQsWWNtGjBhh6tatazZu3GiMMWb//v3m888/NwsWLDDTpk0zc+fONblz5zZz5swxxhgzcuRIU6lSJVOuXDljsVjM3Llz7b9hyHDXr19P0Xb8+HHTt29fkzt3blOqVCnTvXt388cffxhjjJk6daopXbq0mTlzpnnkkUdM/vz5TevWrc0333xj4uLijDHGvPrqq6Zy5crm448/NmfPnjVfffWV6dy5s6lVq5YJCQnJ1O0DHImcjbQgZyMtyNc5B0V3FrZ//37j7e1t8uXLZzp27GhWr15t1q1bZypWrGiCgoLMxYsXjTHGREREmNq1a5v9+/cbY4zZtm2beeaZZ4zFYjGDBw82xhiTmJhojDHm3Llzxhhjtm7daiwWizl48KAxxpgVK1aYLl26mKefftqsWLEiszcVGeDo0aPGYrGY7777LtXnL1y4YA4dOmSMMebvv/82Q4cONUWLFjX58+c3oaGht12vj4+P+eSTT4wxxsTHx5sff/zRLF261CQkJGT4NsC+kpKSbB7v37/ffP/99+bpp582bdu2NSEhIebo0aNm+fLlpnLlyqZPnz7GGGO2bNliXF1djb+/v5k6dao5efKkdR1Xrlwx169fN3Fxceadd94xZcuWNfnz5zclS5Y0ixcvNjExMZm6jYCjkLORHuRs3An5Oueh6M7Ckg/IS5cutWl/4403TMOGDU10dLQxxpiVK1eaMmXKmAEDBpgSJUoYb29vExQUZH766Sdr4jbmRvJOTEw0V65cMX379jUdO3a0JnTkDC1btjQdO3a8Y58ZM2aYChUqmJYtW5rly5ebp556yrRs2dIcPXrUGGPM77//bn755RezZs0aExgYaB5//HFz7NixTIgemSEyMtIcPHjQlCtXzgQEBJhVq1aZJ554whQsWNB69sQYY8LCwkzNmjXN/v37zalTp0y5cuXMW2+9ZbOuI0eOmFGjRplf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qJGMMfrll18kSQ899JAaNWqkv//+WwcOHFBcXJwkKSIiQiNHjtS2bdskSU888YTWr1+vunXrppjWBngQkLORVuRsJCNfIzvLEUU3B2Skh8Vi0dWrV+Xh4aGzZ8+meN78//lbJalXr146ePCgVqxYIWOMrl69ql9++UVXr17Vl19+KUnq06ePli1bpr///lujRo1SkSJFMnV7cH8sFoucnJwUGxurSZMmadKkSTp48KAk6fTp0/rll19Us2ZN1atXTwkJCfLx8ZGLi4skqXr16ipbtqz27NmjU6dOKVeuXOrZs6cCAwPVunVrdenSRY0bN9ajjz6qpKQk1a1bV5JUsmRJVa9e3fr6wIOEnI30IGcjGfka2ZnF5JCfbR5//HFZLBYtXLhQXl5eNs8lb6LFYtGRI0dUrlw5zZ07V127dlV8fLxefPFFLVy4UF27dtW8efN0+vRpJSQkyM/PzwFbgszwwQcfaNKkSVq/fr2qVauWap9r164pd+7c6t69uzZt2qS6devqyJEjateunQICAuTi4qImTZpkbuC4Z8YYm4SZ/HjXrl06c+aMRowYof/++09ubm6Kjo7Wzz//LF9fXw0aNEhr165VmTJl5O3trStXrihPnjwKCQnRo48+qhkzZmjmzJl688031aFDB0nS5cuXtXfvXq1atUpubm4KCgpS8eLFHbXpQJZDzkZ6kLMfLORr5EQ5pujmgIz02Llzp+rWravhw4drwIABypcvn81B/qOPPtL58+c1atQoRUdHa9OmTVq2bJkaNmyol19+WXny5HHwFiCtEhMTrb+O32rnzp2qU6eOHn30UQUHB+vll1/W2bNnVa9ePbVq1Upjx46Vk5OTJkyYoMTEROXLl09RUVH6/fffFRcXp23btunIkSN64YUX9PDDD+uLL76QlPILAwBb5GykBzn7wUC+Ro5m/9vGM8eOHTtM7ty5zejRo82lS5eMMbbz6X344YdmyJAhxhhjoqKizOLFi03nzp3N5MmTrdOT4MHy3HPPmfz585upU6caY24MuBMfH29Wrlxp2rVrZ5YuXergCHE3SUlJqU7hcetcmsYYc/jwYTN37lxz6NAhm/ZmzZoZb29v6zycxhgTFhZmAgICzKZNm1J93TFjxphixYpZjx2vvvqqGTVqVIrBWACkjpyN9CJnZ2/kazzockzRbQwHZKRP8iiXFovFVK5c2XTt2tUUL17clCpVyowdO9ZcuXLF0SEiFakl7qSkJHPs2LFU+3///femfv36xsPDw1SvXt0ULVrUfPLJJ9aEO2bMGFO+fHmzdetW6zJ///23qVChghk/frwxxpgzZ86YP/74wxw/ftzMnTvXVK9e3UybNs3m9QGkDzkb6UHOzn7I18D/yREDqSULCwtTx44d1bdvXz3yyCPq0aOHypQpowEDBqhevXpq27ato0NEFvLQQw9pxowZ2rRpk/r27auiRYtqypQpOnbsmN566y25uro6OkTcJCkpyXoZmLOzsyRp9erVatWqldzc3PTzzz9b+86dO1fLli3ThQsXtGnTJtWrV0/Hjx/Xrl279MEHH2jmzJlavXq1pBsjISff05WsXLlyqlChgrZv364LFy5o165dGjZsmOrWrat3331XnTt31nPPPWftz6VpQPqRs5Ee5Ozsg3wNpJRj7um+2c8//6y9e/fq8OHDaty4sZ5++mlHhwQgg+zbt0/Tpk3TypUrFRsbqxdffFHPP/+83Nzc9M8//ygiIkKhoaEaO3asnn76aZ06dUpVqlRRrly59L///U9Tp07VDz/8oJdfflljx46Vu7u7WrRoIS8vL3388ccqWrSoJOnLL7/U0KFD9cUXX6h58+b66aefVLx4cT3yyCMOfgeAnIWcDeRM5Gvg/+RydAD20KhRIzVq1MjRYQDIQAsWLFDfvn117do11apVS4mJiRo0aJCGDRsmY4z69u2rzz//XIGBgdq7d6919NEiRYro999/12uvvaaoqCh16tRJhQsX1vbt27Vv3z7Vq1dPXbp00ccff6yIiAhrEm/fvr0OHDigihUrKnfu3GrZsqUjNx/IscjZQM5CvgZSylGXlwPIufz9/TVy5EidO3dOmzZtUo8ePTR//nzr888995w8PDxUqVIlawI3xujatWuaPHmyvL29tWXLFo0ePVrPP/+89u3bp507d0qSOnbsqEOHDumXX35RYmKiJKlQoUL66KOPVLp06czfWAAAsinyNZASRTeAbKFy5crq37+/deqXRo0aKTo6Wr/++qssFosqVKigChUq6MyZM5Kk69evy2Kx6OTJk9q5c6eaNGmiokWLyhijpUuXKnfu3Fq7dq1Onz4tT09PLVmyRH379rXefwYAANKPfA2klCMvLweQcyUPzvLII4+oSpUq+uKLL1S3bl3lz59fzzzzjMaPHy9JypXrxuGtTJkyKly4sObNmydPT09FRETIYrFowIABKlasmDw8PGSMUWBgoCM3CwCAHIV8DfyfHDmQGoCcLyEhQR9++KE+/fRT/fvvv5KkvXv3qk6dOvr222/VsmVLXbt2Tblz59avv/6qr7/+WqtWrVKZMmUUFhamunXrOngLAADI+cjXAEU3gGzs559/1jPPPKPPP/9c7du3V0xMjLp06aJ8+fJpyZIlSkxMtF5+du3aNUlS7ty5HRkyAAAPHPI1HnTc0w0g20n+rfDhhx9W3bp1NXv2bEmSm5ub2rZtq2XLlik+Pt7mfq/cuXOTwAEAyETka+AGim4A2Y7FYpF0Y3qR1q1b69tvv1VMTIxy5cqlLl26aN++fXJxcXFwlAAAPNjI18ANDKQGINtycnJS3bp11bt3b128eFGenp4qXLiwChcu7OjQAADA/0e+xoOOe7oBAAAAALATLi8HAAAAAMBOKLoBAAAAALATim4AAAAAAOyEohsAAAAAADuh6AYAAAAAwE4ougEAAAAAsBOKbgAAAAAA7ISiGwAAAAAAO6HoBgAAAADATii6AQAAAACwE4puAAAAAADshKIbAAAAAAA7oegGAAAAAMBO/h/W1FpaCCK5ZgAAAABJRU5ErkJggg==\n"
+          },
+          "metadata": {}
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/",
+          "height": 477
+        },
+        "id": "nHDnsaJcyZ7w",
+        "outputId": "552d7ff5-eabd-4a3f-9785-215cace62f03"
+      },
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "WARNING:absl:Compiled the loaded model, but the compiled metrics have yet to be built. `model.compile_metrics` will be empty until you train or evaluate the model.\n",
+            "WARNING:absl:Compiled the loaded model, but the compiled metrics have yet to be built. `model.compile_metrics` will be empty until you train or evaluate the model.\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\n",
+            "=== Evaluating model: Custom Best ===\n",
+            "Loss: 1.2115   Accuracy: 0.6040\n",
+            "Classification Report:\n"
+          ]
+        },
+        {
+          "output_type": "error",
+          "ename": "ValueError",
+          "evalue": "Number of classes, 10, does not match size of target_names, 1. Try specifying the labels parameter",
+          "traceback": [
+            "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+            "\u001b[0;31mValueError\u001b[0m                                Traceback (most recent call last)",
+            "\u001b[0;32m<ipython-input-7-08b644750c39>\u001b[0m in \u001b[0;36m<cell line: 0>\u001b[0;34m()\u001b[0m\n\u001b[1;32m     53\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     54\u001b[0m     \u001b[0mprint\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0;34m\"Classification Report:\"\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 55\u001b[0;31m     print(classification_report(\n\u001b[0m\u001b[1;32m     56\u001b[0m         \u001b[0my_true\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     57\u001b[0m         \u001b[0my_pred_labels\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+            "\u001b[0;32m/usr/local/lib/python3.11/dist-packages/sklearn/utils/_param_validation.py\u001b[0m in \u001b[0;36mwrapper\u001b[0;34m(*args, **kwargs)\u001b[0m\n\u001b[1;32m    214\u001b[0m                     )\n\u001b[1;32m    215\u001b[0m                 ):\n\u001b[0;32m--> 216\u001b[0;31m                     \u001b[0;32mreturn\u001b[0m \u001b[0mfunc\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0;34m*\u001b[0m\u001b[0margs\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0;34m**\u001b[0m\u001b[0mkwargs\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m    217\u001b[0m             \u001b[0;32mexcept\u001b[0m \u001b[0mInvalidParameterError\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0me\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m    218\u001b[0m                 \u001b[0;31m# When the function is just a wrapper around an estimator, we allow\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+            "\u001b[0;32m/usr/local/lib/python3.11/dist-packages/sklearn/metrics/_classification.py\u001b[0m in \u001b[0;36mclassification_report\u001b[0;34m(y_true, y_pred, labels, target_names, sample_weight, digits, output_dict, zero_division)\u001b[0m\n\u001b[1;32m   2691\u001b[0m             )\n\u001b[1;32m   2692\u001b[0m         \u001b[0;32melse\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m-> 2693\u001b[0;31m             raise ValueError(\n\u001b[0m\u001b[1;32m   2694\u001b[0m                 \u001b[0;34m\"Number of classes, {0}, does not match size of \"\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m   2695\u001b[0m                 \u001b[0;34m\"target_names, {1}. Try specifying the labels \"\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+            "\u001b[0;31mValueError\u001b[0m: Number of classes, 10, does not match size of target_names, 1. Try specifying the labels parameter"
+          ]
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "colab": {
+      "provenance": [],
+      "gpuType": "T4",
+      "include_colab_link": true
+    },
+    "kernelspec": {
+      "display_name": "Python 3",
+      "name": "python3"
+    },
+    "language_info": {
+      "name": "python"
+    },
+    "accelerator": "GPU"
+  },
+  "nbformat": 4,
+  "nbformat_minor": 0
+}
